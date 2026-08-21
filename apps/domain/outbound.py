@@ -36,17 +36,32 @@ second asserts that with the flag off a loopback address is actually refused. Th
 is not optional — an absence assertion with no positive control passes just as well
 against a rule that checks nothing.
 
+**Fleet and the footgun.** [DP-035](../../docs/decisions/DP-035-fleet-egress-and-container-bind.md)
+D1 adds a second hole, `allow_fleet`, for the two fixed adapter targets on the deploying
+fleet's own bridge network — reachable only by a private address, but a specific class of
+one, not "any RFC 1918 range": Python's `ipaddress.is_private` is `True` for loopback,
+link-local (the cloud metadata address `169.254.169.254` included), and the unspecified
+address, as well as for ordinary RFC 1918 space, so a bare `is_private and allow_fleet`
+pass would unlock all three of those in the same breath. `is_fleet_admissible` names the
+exclusions explicitly, both `check_resolved_addresses` and `SocketTransport`'s
+transport-time re-check call it rather than each spelling the exclusion list out, and the
+two flags stay orthogonal: `allow_fleet` never admits loopback, `allow_loopback` never
+admits a private address.
+
 **M4x — two gaps two live adapters actually hit, closed the same way as everything above:
 by rule, testable without a socket, belt-and-suspenders where DNS or an add-on's own input
 is the part policy cannot see in advance.**
 
-*Gap 1, plain HTTP for loopback.* `ALLOWED_SCHEMES` stays `https`-only for redirects and
-for the general case; `OutboundProfile.scheme` lets a profile state `"http"` instead, and
-`resolve` grants it only alongside `allow_loopback` — the same flag that is already the
-one hole in the address rule, rather than a second flag that could disagree with it. That
-is the validation half. `SocketTransport` holds the other half: it refuses to speak plain
-HTTP to anything the DNS it actually performed did not resolve to a loopback address,
-which is the check `resolve` cannot make without a socket.
+*Gap 1, plain HTTP for loopback or fleet.* `ALLOWED_SCHEMES` stays `https`-only for
+redirects and for the general case; `OutboundProfile.scheme` lets a profile state
+`"http"` instead, and `resolve` grants it alongside `allow_loopback` or `allow_fleet` —
+the same two flags that are already the address rule's two holes, rather than a third
+flag that could disagree with either. That is the validation half. `SocketTransport`
+holds the other half: it refuses to speak plain HTTP to anything the DNS it actually
+performed did not resolve to loopback (loopback scope) or to loopback-or-fleet-admissible
+(fleet scope) — the check `resolve` cannot make without a socket.
+`PreparedRequest.plain_http_scope` carries which of the two the profile actually granted,
+decided by `resolve` once and never re-derived by the transport from the profile itself.
 
 *Gap 2, path parameters.* An approved path may carry a `{name}` placeholder; the profile
 declares one validation regex per placeholder in `path_params`. The add-on supplies the
@@ -82,6 +97,7 @@ __all__ = [
     "RefusalReason",
     "check_resolved_addresses",
     "comparable_segments",
+    "is_fleet_admissible",
     "resolve",
     "strip_protected_headers",
 ]
@@ -157,8 +173,20 @@ class PreparedRequest:
     body: bytes | None = None
     #: M4x platform gap 1 (loopback HTTP). From the profile, never from the add-on — the
     #: same provenance `method` already has. `"https"` unless the profile explicitly
-    #: declares `"http"`, which `resolve` only grants when `allow_loopback` is also set.
+    #: declares `"http"`, which `resolve` only grants when `allow_loopback` or
+    #: `allow_fleet` is also set.
     scheme: str = "https"
+    #: DP-035 D1. Which of the two plain-HTTP holes this request was granted under:
+    #: `"loopback"` unless the profile set `allow_fleet`, in which case `resolve` sets
+    #: `"fleet"` — the wider of the two, since a fleet-scoped profile's own address rule
+    #: already admits loopback as well. `SocketTransport._refuse_http_off_loopback` reads
+    #: this rather than the profile's flags directly, so the transport-time re-check can
+    #: never end up deciding a different scope than `resolve` already committed to. The
+    #: default (`"loopback"`) is what every construction that predates this field — in
+    #: this module's own tests and in every caller that builds a `PreparedRequest` by
+    #: hand — keeps meaning, since `scheme` defaults to `"https"` for the same requests
+    #: and this value is inert unless `scheme == "http"`.
+    plain_http_scope: str = "loopback"
 
 
 #: `p0-security.md` requires per-source limits; these are the values used when a profile
@@ -447,11 +475,18 @@ class OutboundProfile:
     limits: Mapping[str, Any] = field(default_factory=lambda: dict(DEFAULT_LIMITS))
     allowed_parameters: tuple[str, ...] | None = None
     allow_loopback: bool = False
+    #: DP-035 D1. The fleet-network hole: an address that is private and not loopback,
+    #: link-local, multicast, reserved, or unspecified — `is_fleet_admissible` names the
+    #: exclusion list once for both this dataclass's own `check_resolved_addresses` and
+    #: `SocketTransport`'s transport-time re-check. Orthogonal to `allow_loopback`: neither
+    #: flag admits the other's range, and like it, never set by a committed source outside
+    #: the two adapter manifests DP-035 D3 names.
+    allow_fleet: bool = False
     #: M4x platform gap 1. `"https"` unless the profile states `"http"` — and `resolve`
-    #: grants `"http"` only when `allow_loopback` is also set, which is the same flag
-    #: `check_resolved_addresses` already uses to admit a loopback address at all. One base
-    #: value per profile rather than per endpoint: every fixed adapter target this platform
-    #: has hosted so far speaks one scheme for every route it serves.
+    #: grants `"http"` only when `allow_loopback` or `allow_fleet` is also set, which are
+    #: the same two flags `check_resolved_addresses` already uses to admit an address at
+    #: all. One base value per profile rather than per endpoint: every fixed adapter target
+    #: this platform has hosted so far speaks one scheme for every route it serves.
     scheme: str = "https"
     #: What this source authenticates with, and where each part goes (DP-018 D2). On the
     #: *profile* rather than in the add-on's manifest: an add-on naming its own header would
@@ -526,6 +561,7 @@ class OutboundProfile:
             limits=limits,
             allowed_parameters=None if allowed is None else tuple(str(a) for a in allowed),
             allow_loopback=bool(profile.get("allow_loopback", False)),
+            allow_fleet=bool(profile.get("allow_fleet", False)),
             credentials=_read_credentials(profile),
             scheme=str(profile.get("scheme", "https")),
         )
@@ -570,11 +606,11 @@ def resolve(
 
     # M4x platform gap 1. The scheme is the profile's, exactly as the host and method
     # already are — an add-on names an endpoint, never a transport. `http` is granted only
-    # alongside `allow_loopback`: the same flag `check_resolved_addresses` already requires
-    # before it will admit a loopback address at all, so one flag states one intention
-    # rather than two that could disagree. This is the "profile validation" half of the
-    # belt-and-suspenders rule; `SocketTransport` holds the other half against the address
-    # DNS actually resolved.
+    # alongside `allow_loopback` or `allow_fleet` (DP-035 D1): the same two flags
+    # `check_resolved_addresses` already requires before it will admit an address at all,
+    # so one flag each states one intention rather than a third that could disagree with
+    # both. This is the "profile validation" half of the belt-and-suspenders rule;
+    # `SocketTransport` holds the other half against the address DNS actually resolved.
     scheme = profile.scheme
     if scheme not in ("https", "http"):
         return Refusal(
@@ -583,11 +619,12 @@ def resolve(
             "platform does not send",
             {"endpoint_ref": endpoint_ref, "scheme": scheme},
         )
-    if scheme == "http" and not profile.allow_loopback:
+    if scheme == "http" and not (profile.allow_loopback or profile.allow_fleet):
         return Refusal(
             RefusalReason.SCHEME_NOT_ALLOWED,
-            f"plain HTTP is only permitted when the source's profile sets allow_loopback; "
-            f"{endpoint_ref!r} would be requested over 'http' without it",
+            "plain HTTP is only permitted when the source's profile sets allow_loopback "
+            f"or allow_fleet; {endpoint_ref!r} would be requested over 'http' without "
+            "either",
             {"endpoint_ref": endpoint_ref, "scheme": scheme},
         )
 
@@ -722,6 +759,9 @@ def resolve(
         method=method,
         body=body,
         scheme=scheme,
+        # DP-035 D1. Decided once, here, from the profile the caller cannot influence —
+        # never re-derived by the transport, which only ever reads this back.
+        plain_http_scope="fleet" if profile.allow_fleet else "loopback",
     )
 
 
@@ -848,6 +888,44 @@ def _is_within_approved_range(path: str, profile: OutboundProfile) -> bool:
     return False
 
 
+def is_fleet_admissible(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether `address` is inside `allow_fleet`'s grant (DP-035 D1).
+
+    Private, and not loopback, link-local, multicast, reserved, or unspecified. Named as
+    its own function, rather than inlined at each of its two call sites, because both
+    `check_resolved_addresses` below and `SocketTransport`'s transport-time plain-HTTP
+    re-check (`domain.transport._refuse_http_off_loopback`) need the identical exclusion
+    list — the same footgun `p0-security.md`'s loopback rule already had to name: Python's
+    `ipaddress.is_private` is `True` for `127.0.0.0/8`, `169.254.0.0/16` (the cloud
+    metadata address `169.254.169.254` included), and `0.0.0.0/8` as well as for ordinary
+    RFC 1918 space, so a bare `is_private` check would admit all three ranges this
+    function exists to keep excluded.
+
+    `[확인 사실]` REVIEW-TASK-012 F2: the `is_multicast` clause is dead code against
+    CPython 3.13's actual `ipaddress` tables — no address is both `is_private` and
+    `is_multicast` (`IPv4Address`'s multicast range `224.0.0.0/4` and `IPv6Address`'s
+    `ff00::/8` do not overlap either family's `_private_networks`), so `is_private`
+    alone already refuses every multicast address and deleting `and not
+    address.is_multicast` leaves every test in this tree green — the one mutation
+    REVIEW-TASK-012's twelve did not kill. `[결정]` Kept anyway, as defence-in-depth
+    against `ipaddress` semantics drifting across a Python version — the two other
+    classes this module already carries an unreachable-clause precedent for
+    (`is_reserved`, whose own "subsumed by private" case is recorded in
+    `TestResolvedAddressRange.test_the_reserved_clause_is_subsumed_by_the_private_one`)
+    make this the same shape rather than a new one. Naming it here is the fix
+    REVIEW-TASK-012 asked for: the clause must not be allowed to read as load-bearing
+    when nothing here currently exercises it as such.
+    """
+    return (
+        address.is_private
+        and not address.is_loopback
+        and not address.is_link_local
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
+    )
+
+
 def check_resolved_addresses(
     host: str, addresses: Sequence[str], profile: OutboundProfile
 ) -> Refusal | None:
@@ -872,6 +950,8 @@ def check_resolved_addresses(
                 {"host": host},
             )
         if address.is_loopback and profile.allow_loopback:
+            continue
+        if profile.allow_fleet and is_fleet_admissible(address):
             continue
         if (
             address.is_loopback

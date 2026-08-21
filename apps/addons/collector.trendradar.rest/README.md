@@ -1,10 +1,13 @@
 # collector.trendradar.rest
 
 Adapter for trend-radar 1.0.0's read-only, unauthenticated JSON API
-(`http://127.0.0.1:8000/api/v1`), fixed as a P1 adapter target by
-[DP-031](../../../docs/decisions/DP-031-p1-collector-topology.md) D3. Built against the
-spec's own adapter design (`docs/superpowers/specs/2026-08-21-p1-reconstruction-design.md`
-§5.1) and `service/trend-radar`'s own `docs/api.md` (read-only to this project).
+(`http://trend-radar-dashboard:8000/api/v1`), fixed as a P1 adapter target by
+[DP-031](../../../docs/decisions/DP-031-p1-collector-topology.md) D3, with the address
+revised from the loopback literal to the fleet hostname by
+[DP-035](../../../docs/decisions/DP-035-fleet-egress-and-container-bind.md) D3 once
+cosmai joins the fleet's `db-net` bridge network. Built against the spec's own adapter
+design (`docs/superpowers/specs/2026-08-21-p1-reconstruction-design.md` §5.1) and
+`service/trend-radar`'s own `docs/api.md` (read-only to this project).
 
 ## What it collects
 
@@ -93,6 +96,28 @@ release that renames or drops one silently.
 
 `needs_credential = false`. `docs/api.md`: "Read-only, no authentication, localhost by
 default."
+
+## The operator-approved outbound profile
+
+DP-035 D3's revised target, as the registered source row now needs to actually reach it
+(the manifest's `[declares].hosts` above states only what the add-on needs approved —
+DP-008 D4 keeps the grant itself on the row):
+
+```json
+{
+  "hosts": ["trend-radar-dashboard"],
+  "port": 8000,
+  "scheme": "http",
+  "allow_fleet": true,
+  "endpoints": { "...": "as declared above" }
+}
+```
+
+`scheme: "http"` is granted only because `allow_fleet` is also set — the flag
+`domain.outbound.resolve` requires before it will admit plain HTTP at all
+(`domain.outbound.py`, DP-035 D1); a host outside the fleet's private address range with
+`scheme: "http"` is refused both there and again by `domain.transport.SocketTransport`
+against the address it actually resolved.
 
 ## No normalizer in this batch
 

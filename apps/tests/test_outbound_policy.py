@@ -404,6 +404,129 @@ class TestLoopbackEscapeHatch:
         assert row is not None and row.allow_loopback is False
 
 
+class TestFleetEscapeHatch:
+    """DP-035 D1's second hole, mirroring `TestLoopbackEscapeHatch` above.
+
+    Not a wider `allow_loopback`: `allow_fleet` admits a private, non-loopback address
+    (a `db-net` bridge-network target), and `allow_loopback` keeps admitting only the
+    loopback range it already did. Each of the two flags is tested for what it grants and,
+    beside every grant, for what it still refuses — `169.254.169.254` (the cloud-metadata
+    address, inside `is_private` in Python's `ipaddress`), `127.0.0.1` (loopback, also
+    inside `is_private`), a multicast address, a reserved address, and `0.0.0.0` (also
+    inside `is_private`) are asserted individually rather than as one parametrized group,
+    per the packet's own acceptance criterion.
+    """
+
+    def test_the_flag_permits_a_private_fleet_address(self) -> None:
+        profile = a_profile(allow_fleet=True)
+        for address in ("10.0.0.5", "172.20.0.7", "192.168.1.9"):
+            assert check_resolved_addresses("db-net-host", [address], profile) is None, address
+
+    def test_with_the_flag_off_the_same_addresses_are_actually_refused(self) -> None:
+        """The positive control the flag exists to require."""
+        for address in ("10.0.0.5", "172.20.0.7", "192.168.1.9"):
+            refusal = check_resolved_addresses("db-net-host", [address], a_profile())
+            assert isinstance(refusal, Refusal), address
+            assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_does_not_admit_loopback(self) -> None:
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", ["127.0.0.1"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_does_not_admit_the_cloud_metadata_address(self) -> None:
+        """`169.254.169.254` is link-local and, in Python's `ipaddress`, also `is_private` —
+        exactly the class `is_fleet_admissible` exists to exclude by name."""
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", ["169.254.169.254"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_does_not_admit_multicast(self) -> None:
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", ["224.0.0.1"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_does_not_admit_a_reserved_address(self) -> None:
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", ["240.0.0.1"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_does_not_admit_the_unspecified_address(self) -> None:
+        """`0.0.0.0` is `is_private` in Python's `ipaddress` too — the third class DP-035's
+        own evidence names by name."""
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", ["0.0.0.0"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_the_flag_admits_an_ipv4_mapped_fleet_address(self) -> None:
+        """`[측정]` REVIEW-TASK-012 F5: CPython 3.13's `IPv6Address.is_private` (and the
+        sibling `is_loopback`/`is_link_local`/`is_reserved`/`is_unspecified`) delegate to
+        `.ipv4_mapped` whenever it is not `None`, so an IPv4-mapped address is judged by
+        the IPv4 address it wraps — `pyproject.toml` pins `requires-python = ">=3.13"`,
+        which is what the two refusals just below actually rest on rather than an
+        untested assumption. `is_fleet_admissible`'s own docstring names the same pin."""
+        profile = a_profile(allow_fleet=True)
+        assert check_resolved_addresses("db-net-host", ["::ffff:10.0.0.5"], profile) is None
+
+    @pytest.mark.parametrize("address", ["::ffff:169.254.169.254", "::ffff:127.0.0.1"])
+    def test_the_flag_does_not_admit_ipv4_mapped_blocked_addresses(
+        self, address: str
+    ) -> None:
+        """The IPv4-mapped spellings of the cloud-metadata and loopback addresses — the
+        obvious way to try to smuggle either past a check that only looked at the
+        unmapped forms."""
+        profile = a_profile(allow_fleet=True)
+        refusal = check_resolved_addresses("db-net-host", [address], profile)
+        assert isinstance(refusal, Refusal), address
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    @pytest.mark.parametrize("address", ["::ffff:169.254.169.254", "::ffff:127.0.0.1"])
+    def test_the_ipv4_mapped_blocked_addresses_are_refused_with_the_flag_off_too(
+        self, address: str
+    ) -> None:
+        """The positive control the pair above needs: these two are not refused merely
+        because `allow_fleet` happens to be set — the base rule, no flag at all, already
+        blocks them, the same flag-on/flag-off shape every other case in this class
+        carries."""
+        refusal = check_resolved_addresses("db-net-host", [address], a_profile())
+        assert isinstance(refusal, Refusal), address
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_allow_loopback_alone_does_not_admit_a_private_address(self) -> None:
+        """Orthogonality, the first direction: the older flag does not gain the new
+        flag's range just because both live on the same dataclass."""
+        profile = a_profile(allow_loopback=True)
+        refusal = check_resolved_addresses("db-net-host", ["10.0.0.5"], profile)
+        assert isinstance(refusal, Refusal)
+        assert refusal.reason is RefusalReason.ADDRESS_RANGE_BLOCKED
+
+    def test_allow_fleet_alone_does_not_admit_loopback_via_the_loopback_branch(self) -> None:
+        """Orthogonality, the second direction, restated: `allow_fleet` without
+        `allow_loopback` still refuses `127.0.0.1` — already covered above, kept here as
+        the explicit pairing with the case immediately before it."""
+        profile = a_profile(allow_fleet=True)
+        assert profile.allow_loopback is False
+        refusal = check_resolved_addresses("db-net-host", ["127.0.0.1"], profile)
+        assert isinstance(refusal, Refusal)
+
+    def test_the_flag_is_off_unless_a_profile_asks_for_it(self) -> None:
+        assert a_profile().allow_fleet is False
+        row = OutboundProfile.from_row({"hosts": ["h"], "endpoints": {}})
+        assert row is not None and row.allow_fleet is False
+
+    def test_a_row_can_state_allow_fleet(self) -> None:
+        row = OutboundProfile.from_row(
+            {"hosts": ["10.0.0.5"], "endpoints": {"items": "/v1/items"}, "allow_fleet": True}
+        )
+        assert row is not None
+        assert row.allow_fleet is True
+
+
 class TestProtectedHeaders:
     def test_credential_bearing_headers_are_removed(self) -> None:
         stripped = strip_protected_headers(
@@ -761,9 +884,10 @@ class TestScheme:
         assert request.url.startswith("https://")
         assert frozenset({"https"}) == ALLOWED_SCHEMES
 
-    def test_http_is_refused_without_allow_loopback(self) -> None:
+    def test_http_is_refused_without_allow_loopback_or_allow_fleet(self) -> None:
         profile = a_profile(scheme="http")
         assert profile.allow_loopback is False
+        assert profile.allow_fleet is False
         refusal = resolve("items", profile)
         assert isinstance(refusal, Refusal)
         assert refusal.reason is RefusalReason.SCHEME_NOT_ALLOWED
@@ -776,6 +900,35 @@ class TestScheme:
         assert isinstance(request, PreparedRequest)
         assert request.scheme == "http"
         assert request.url == "http://127.0.0.1:443/v1/items"
+
+    def test_http_is_granted_once_allow_fleet_is_set_instead(self) -> None:
+        """DP-035 D1: `allow_fleet` alone, with no `allow_loopback`, is also enough."""
+        profile = a_profile(scheme="http", allow_fleet=True, hosts=("10.0.0.5",))
+        assert profile.allow_loopback is False
+        request = resolve("items", profile)
+        assert isinstance(request, PreparedRequest)
+        assert request.scheme == "http"
+        assert request.url == "http://10.0.0.5:443/v1/items"
+
+    def test_plain_http_scope_is_loopback_by_default(self) -> None:
+        """`plain_http_scope` reads `"loopback"` whenever `allow_fleet` is not set —
+        including for an ordinary https request, where the value is inert."""
+        request = resolve("items", a_profile())
+        assert isinstance(request, PreparedRequest)
+        assert request.plain_http_scope == "loopback"
+
+        http_request = resolve(
+            "items", a_profile(scheme="http", allow_loopback=True, hosts=("127.0.0.1",))
+        )
+        assert isinstance(http_request, PreparedRequest)
+        assert http_request.plain_http_scope == "loopback"
+
+    def test_plain_http_scope_is_fleet_when_allow_fleet_is_set(self) -> None:
+        """The positive control: the scope actually widens rather than reading the same
+        value regardless of the flag."""
+        request = resolve("items", a_profile(scheme="http", allow_fleet=True, hosts=("10.0.0.5",)))
+        assert isinstance(request, PreparedRequest)
+        assert request.plain_http_scope == "fleet"
 
     def test_an_unrecognised_scheme_is_refused_even_with_the_flag_set(self) -> None:
         profile = a_profile(scheme="ftp", allow_loopback=True)

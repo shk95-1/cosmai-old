@@ -1,12 +1,14 @@
 """collector.tubedepth.rest — incremental pull from tubedepth's artifacts feed.
 
-Target: tubedepth (yt-scrapper) v1.0.0, `http://127.0.0.1:8080`, fixed by
+Target: tubedepth (yt-scrapper) v1.0.0, originally `http://127.0.0.1:8080` per
 [DP-031](../../../docs/decisions/DP-031-p1-collector-topology.md) D3 and its
-2026-08-21 addendum. See this add-on's README.md for the design this
-implements and for two platform-level gaps this add-on cannot work around by
-itself (`domain.transport.SocketTransport` is HTTPS-only against a service
-that serves plain HTTP; `domain.outbound.resolve` has no per-request path
-parameter, which the payload-dereference route needs).
+2026-08-21 addendum, address revised to `http://tubedepth-api:8080` by
+[DP-035](../../../docs/decisions/DP-035-fleet-egress-and-container-bind.md) D3 once
+cosmai joins the fleet's `db-net` bridge network. See this add-on's README.md for the
+design this implements and for two platform-level gaps this add-on cannot work around
+by itself (`domain.transport.SocketTransport` is HTTPS-only against a service that
+serves plain HTTP; `domain.outbound.resolve` has no per-request path parameter, which
+the payload-dereference route needs).
 
 Design (spec Section 5.2):
 

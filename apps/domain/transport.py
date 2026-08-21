@@ -50,16 +50,20 @@ row, profile field, or environment variable being able to widen the policy — a
 holds the positive control: the same stub under the default context fails to verify.
 
 **M4x, plain HTTP — the second half of the belt-and-suspenders rule.** `domain.outbound`
-grants `request.scheme == "http"` only when the profile set `allow_loopback`, and that
-grant is stated before a socket ever opens. It cannot be the whole rule: `allow_loopback`
-is a flag a profile *states*, and the address it is actually about to connect to is only
-known after `resolve_addresses` runs — the same DNS gap `outbound.py`'s own docstring
-names for `check_resolved_addresses`. So this module holds the second check: before it
-will open a plain-HTTP connection, every address `send` resolved must itself be loopback,
-regardless of what the profile claims. A name that answered loopback once and something
-else the second time is exactly the rebinding hole this module's own opening paragraph
-already refuses to create for TLS; the same connect-to-what-was-checked discipline applies
-here without a certificate to fall back on.
+grants `request.scheme == "http"` only when the profile set `allow_loopback` or
+`allow_fleet` (DP-035 D1), and that grant is stated before a socket ever opens. It cannot
+be the whole rule: both flags are things a profile *states*, and the address it is
+actually about to connect to is only known after `resolve_addresses` runs — the same DNS
+gap `outbound.py`'s own docstring names for `check_resolved_addresses`. So this module
+holds the second check: before it will open a plain-HTTP connection, every address `send`
+resolved must itself be loopback (loopback scope) or loopback-or-fleet-admissible (fleet
+scope), regardless of what the profile claims. Which scope applies is read off
+`request.plain_http_scope` — decided once by `resolve` and never re-derived here from the
+profile's flags, so this module cannot end up disagreeing with the decision that granted
+`"http"` in the first place. A name that answered loopback once and something else the
+second time is exactly the rebinding hole this module's own opening paragraph already
+refuses to create for TLS; the same connect-to-what-was-checked discipline applies here
+without a certificate to fall back on.
 """
 
 from __future__ import annotations
@@ -80,6 +84,7 @@ from domain.outbound import (
     Refusal,
     RefusalReason,
     check_resolved_addresses,
+    is_fleet_admissible,
     strip_protected_headers,
 )
 
@@ -221,15 +226,25 @@ def _refuse_http_off_loopback(
     """The transport-time half of the plain-HTTP rule. `None` means proceed.
 
     `domain.outbound.resolve` already refused a plain-HTTP request unless the profile set
-    `allow_loopback` — but that is a claim about the profile, made before any name was
-    resolved. This is the claim checked against what `getaddrinfo` actually returned, which
-    is the only place either half of the belt-and-suspenders rule can be checked against
-    reality: `check_resolved_addresses` runs immediately before this and already requires
-    `allow_loopback` for any address in it that is loopback, but a non-loopback address is
-    never blocked by that rule at all (`p0-security.md` blocks *private* ranges, not every
-    non-loopback host) — so without this, a source with `allow_loopback = true` and `scheme
-    = "http"` in its profile could ask for a request to a hostname resolving anywhere
-    public, and there would be no `SocketTransport`-level check left to refuse it.
+    `allow_loopback` or `allow_fleet` — but that is a claim about the profile, made before
+    any name was resolved. This is the claim checked against what `getaddrinfo` actually
+    returned, which is the only place either half of the belt-and-suspenders rule can be
+    checked against reality: `check_resolved_addresses` runs immediately before this and
+    already requires the matching flag for any address in it that is loopback or
+    fleet-admissible, but an address outside both classes is never blocked by that rule at
+    all when it is public (`p0-security.md` blocks *private* ranges, not every non-loopback
+    host) — so without this, a source with `allow_loopback = true` (or `allow_fleet =
+    true`) and `scheme = "http"` in its profile could ask for a request to a hostname
+    resolving anywhere public, and there would be no `SocketTransport`-level check left to
+    refuse it.
+
+    Which range is admissible here is `request.plain_http_scope`, not the profile's flags
+    directly: `resolve` already decided `"fleet"` iff the profile set `allow_fleet`, and
+    re-reading the flags here instead would let this function's decision drift from that
+    one. Loopback scope requires every address to be loopback, unchanged from before DP-035;
+    fleet scope requires every address to be loopback *or* fleet-admissible, since a
+    fleet-scoped profile's own address rule already admits loopback as well (the flags are
+    a widening, not a swap).
     """
     for raw in addresses:
         try:
@@ -240,14 +255,18 @@ def _refuse_http_off_loopback(
                 f"{request.host!r} resolved to something that is not an IP address",
                 {"host": request.host},
             )
-        if not address.is_loopback:
-            return Refusal(
-                RefusalReason.SCHEME_NOT_ALLOWED,
-                f"plain HTTP was refused for {request.endpoint_ref!r}: {request.host!r} "
-                f"resolved to {address!s}, which is not a loopback address",
-                {"endpoint_ref": request.endpoint_ref, "host": request.host,
-                 "address": str(address)},
-            )
+        if address.is_loopback:
+            continue
+        if request.plain_http_scope == "fleet" and is_fleet_admissible(address):
+            continue
+        return Refusal(
+            RefusalReason.SCHEME_NOT_ALLOWED,
+            f"plain HTTP was refused for {request.endpoint_ref!r}: {request.host!r} "
+            f"resolved to {address!s}, which is not loopback"
+            + (" or fleet-admissible" if request.plain_http_scope == "fleet" else ""),
+            {"endpoint_ref": request.endpoint_ref, "host": request.host,
+             "address": str(address)},
+        )
     return None
 
 
@@ -255,11 +274,11 @@ class SocketTransport:
     """The real one. HTTPS by default, one hop, and it never looks a name up twice.
 
     Plain HTTP is the one exception, and only when `request.scheme == "http"` — which
-    `domain.outbound.resolve` sets only for a profile that declared `allow_loopback`, and
-    which `send` re-checks against the addresses this module itself resolved before it
-    ever reaches `_connect`. Every other property this docstring already claimed is
-    unchanged for that path: one hop, no redirect followed, one deadline for the whole
-    request.
+    `domain.outbound.resolve` sets only for a profile that declared `allow_loopback` or
+    `allow_fleet`, and which `send` re-checks (against `request.plain_http_scope`) against
+    the addresses this module itself resolved before it ever reaches `_connect`. Every
+    other property this docstring already claimed is unchanged for that path: one hop, no
+    redirect followed, one deadline for the whole request.
     """
 
     def __init__(self, context: ssl.SSLContext | None = None) -> None:
@@ -359,9 +378,10 @@ class SocketTransport:
 
         `request.scheme` reaching here at all means `send` already ran both belts:
         `domain.outbound.resolve` granted `"http"` only alongside the profile's
-        `allow_loopback`, and `_refuse_http_off_loopback` has already confirmed every
-        address in `addresses` actually is loopback. Nothing here re-decides that policy —
-        it only chooses which connection class to build.
+        `allow_loopback` or `allow_fleet`, and `_refuse_http_off_loopback` has already
+        confirmed every address in `addresses` is admissible for the scope that grant
+        chose. Nothing here re-decides that policy — it only chooses which connection
+        class to build.
         """
         plain = request.scheme == "http"
         last: Exception | None = None

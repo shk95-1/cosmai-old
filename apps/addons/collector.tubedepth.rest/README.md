@@ -3,10 +3,14 @@
 A thin REST adapter for tubedepth (yt-scrapper), the YouTube domain service.
 Target fixed by
 [DP-031](../../../docs/decisions/DP-031-p1-collector-topology.md) D3 and its
-2026-08-21 addendum: release tag **v1.0.0**, `http://127.0.0.1:8080`,
-`X-API-Key` auth, 60 requests/minute. This is one of the two heavy, periodic
-collection targets DP-031 keeps external (the other is `collector.trendradar.rest`);
-NAVER's three sources went the other way, as internal direct collectors (DP-031 D2).
+2026-08-21 addendum: release tag **v1.0.0**, `X-API-Key` auth, 60
+requests/minute. The address itself — originally the loopback literal
+`http://127.0.0.1:8080` — is revised to `http://tubedepth-api:8080` by
+[DP-035](../../../docs/decisions/DP-035-fleet-egress-and-container-bind.md) D3
+once cosmai joins the fleet's `db-net` bridge network. This is one of the two
+heavy, periodic collection targets DP-031 keeps external (the other is
+`collector.trendradar.rest`); NAVER's three sources went the other way, as
+internal direct collectors (DP-031 D2).
 
 ## What it collects
 
@@ -79,15 +83,16 @@ work, never committed, and does not appear in any fixture, log, or this file.
 
 ## The operator-approved outbound profile
 
-M4x closed the two gaps below; this is the profile shape a source row now
-registers to actually reach the live target, not a hypothetical one:
+M4x closed the two gaps below; DP-035 D3 then moved the target off loopback. This is
+the profile shape a source row now registers to actually reach the live target on
+`db-net`, not a hypothetical one:
 
 ```json
 {
-  "hosts": ["127.0.0.1"],
+  "hosts": ["tubedepth-api"],
   "port": 8080,
   "scheme": "http",
-  "allow_loopback": true,
+  "allow_fleet": true,
   "endpoints": {
     "artifacts_list": {"path": "/v1/artifacts", "method": "GET"},
     "artifact_payload": {
@@ -100,11 +105,12 @@ registers to actually reach the live target, not a hypothetical one:
 }
 ```
 
-`scheme: "http"` is granted only because `allow_loopback` is also set — the
-same flag that already admits a loopback address at all
-(`domain.outbound.resolve`, M4x gap 1); a non-loopback host with `scheme:
-"http"` is refused both there and again by `domain.transport.SocketTransport`
-against the address it actually resolved. `artifact_payload.path_params`
+`scheme: "http"` is granted only because `allow_fleet` is also set — the same flag
+that already admits a private, non-loopback fleet address at all
+(`domain.outbound.resolve`, DP-035 D1); a host outside the fleet's private address
+range with `scheme: "http"` is refused both there and again by
+`domain.transport.SocketTransport` against the address it actually resolved.
+`artifact_payload.path_params`
 declares the one regex `{digest}` must match; `resolve` validates the value
 `context.fetch("artifact_payload", {"digest": digest})` supplies, substitutes
 it, and only then runs the same segment-by-segment containment every approved
@@ -183,8 +189,9 @@ M4 found and named two platform-level gaps rather than routing around them:
 `domain.transport.SocketTransport` was HTTPS-only against a target that
 serves plain HTTP by design, and `domain.outbound.resolve` had no per-request
 path parameter for `GET /v1/artifacts/{digest}`. Both are now platform
-mechanisms — `domain/outbound.py`'s `scheme`/`allow_loopback` and
-`path_params`, `domain/transport.py`'s loopback-checked plain-HTTP path — and
+mechanisms — `domain/outbound.py`'s `scheme`/`allow_loopback`/`allow_fleet` (the
+latter DP-035 D1) and `path_params`, `domain/transport.py`'s loopback-or-fleet-checked
+plain-HTTP path — and
 this add-on needed **no handler code change** to use either: `handler.py`'s
 `context.fetch(_ARTIFACT_PAYLOAD, {"digest": digest})` was already written to
 the contract's intended shape (see "Design" above and the git history of this

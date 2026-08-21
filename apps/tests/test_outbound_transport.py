@@ -56,7 +56,12 @@ from domain.outbound import (
     RefusalReason,
     resolve,
 )
-from domain.transport import SocketTransport, TransportLimits, TransportUnavailable
+from domain.transport import (
+    SocketTransport,
+    TransportLimits,
+    TransportUnavailable,
+    _refuse_http_off_loopback,
+)
 
 #: The repository root two levels up from this file (``apps/tests/``), not three as in
 #: P0's ``experiments/integrated-p0/tests/`` — one directory shallower.
@@ -573,6 +578,22 @@ class TestLoopbackIsOnlyReachableByFlag:
     #: this same repository, so scanning them double-counts every authored occurrence.
     SKIPPED_PARTS = ("__pycache__", ".git", ".venv", "node_modules", ".worktrees")
 
+    #: Relative-path *prefixes* skipped as a whole subtree — distinct from `SKIPPED_PARTS`,
+    #: which drops a file the instant any single part matches, anywhere in the path.
+    #: `.claude/worktrees/` is the harness's own scratch checkouts of this repository
+    #: (`EnterWorktree`'s default location; `[측정]` REVIEW-TASK-012 F1 found one at
+    #: `.claude/worktrees/<name>/apps/domain/outbound.py` mid-review, unrelated to this
+    #: task, and it turned this scan red — a nested worktree does not show up in
+    #: `git status`, so the scan was reading content nothing in this repository's own
+    #: history put there) and belongs excluded for the same double-counting reason as
+    #: `.worktrees`. The rest of `.claude/` does not: `[측정]` REVIEW-TASK-012's
+    #: re-review, O1: skipping all of `.claude` as a `SKIPPED_PARTS` entry silently
+    #: stopped this scan from ever reaching `.claude/settings.json`, a tracked,
+    #: scanned-suffix file — putting a whole directory in `SKIPPED_PARTS` is "skip
+    #: every file under this name anywhere in the tree", which is too blunt for a
+    #: directory this repository also keeps real, scanned content in.
+    SKIPPED_PREFIXES = ((".claude", "worktrees"),)
+
     def test_no_source_or_add_on_in_the_repository_sets_it(self) -> None:
         """The flag exists for tests. If it ever appears elsewhere, this names the file.
 
@@ -612,6 +633,8 @@ class TestLoopbackIsOnlyReachableByFlag:
                 continue
             rel = path.relative_to(REPO_ROOT)
             if any(part in self.SKIPPED_PARTS for part in rel.parts):
+                continue
+            if any(rel.parts[: len(prefix)] == prefix for prefix in self.SKIPPED_PREFIXES):
                 continue
             if any(part.startswith("dist") for part in rel.parts):
                 continue
@@ -657,6 +680,16 @@ class TestLoopbackIsOnlyReachableByFlag:
             # profile view renders back to an operator; the dashboard never constructs or
             # submits an outbound profile itself.
             Path("apps/dashboard/src/api/types.ts"),
+            # TASK-012 (DP-035 D3). The idempotent row migration script sets it,
+            # deliberately: it reads a registered row's stored ``allow_loopback`` grant and
+            # replaces it with ``allow_fleet`` (see the sibling scan below for that flag's
+            # own occurrence here). Registered rather than the scan being narrowed, the same
+            # way ``test_operator_loop.py`` above was.
+            Path("apps/scripts/migrate_fleet_source_rows.py"),
+            # REVIEW-TASK-012 F4's repair: this script's own test fixtures carry an
+            # ``allow_loopback: true`` loopback-shaped profile (the exact row shape the
+            # script rewrites) and assert the flag is gone afterward.
+            Path("apps/tests/test_migrate_fleet_source_rows.py"),
         }
         assert set(found) <= permitted, f"allow_loopback appeared in {set(found) - permitted}"
         # The control: the scan can find things. An empty result would satisfy the subset
@@ -669,14 +702,102 @@ class TestLoopbackIsOnlyReachableByFlag:
         Asserted per suffix rather than in total, because the defect M1 found was exactly a
         suffix the scan never opened.
         """
-        reached = {
-            path.suffix
-            for path in REPO_ROOT.rglob("*")
-            if path.is_file()
-            and path.suffix in self.SCANNED_SUFFIXES
-            and not any(part in self.SKIPPED_PARTS for part in path.relative_to(REPO_ROOT).parts)
-        }
+        reached = set()
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file() or path.suffix not in self.SCANNED_SUFFIXES:
+                continue
+            rel = path.relative_to(REPO_ROOT)
+            if any(part in self.SKIPPED_PARTS for part in rel.parts):
+                continue
+            if any(rel.parts[: len(prefix)] == prefix for prefix in self.SKIPPED_PREFIXES):
+                continue
+            reached.add(path.suffix)
         for required in (".py", ".toml", ".sql", ".ts", ".tsx"):
+            assert required in reached, f"the scan opened no {required} file"
+
+
+class TestFleetIsOnlyReachableByFlag:
+    """DP-035 D1's second hole, scanned the same way `TestLoopbackIsOnlyReachableByFlag`
+    scans `allow_loopback` above — same `SCANNED_SUFFIXES`/`SKIPPED_PARTS`/
+    `SKIPPED_PREFIXES` discipline, the same positive control (the scan must find
+    `apps/domain/outbound.py`).
+
+    `allow_fleet`'s permitted set is smaller and newer than `allow_loopback`'s: this task's
+    own code and tests, plus DP-035 D3's two named exceptions —
+    `collector.trendradar.rest/addon.toml` and `collector.tubedepth.rest/addon.toml` —
+    which document, in a `#` comment, the grant their operator-approved source rows must
+    carry. Never a `[declares]` key: DP-035 D4 is exactly the reason (`addon_api.manifest`'s
+    parser ignores an unknown `[declares]` key silently, so the grant lives in the row and
+    not in the manifest). Because the set is exhaustively known rather than merely bounded,
+    this asserts equality rather than the containing scan's subset — "those two paths and
+    no more".
+    """
+
+    SCANNED_SUFFIXES = (".py", ".ts", ".tsx", ".toml", ".sql", ".json", ".yaml", ".yml", ".sh")
+    #: Same discipline as `TestLoopbackIsOnlyReachableByFlag.SKIPPED_PARTS` above.
+    SKIPPED_PARTS = ("__pycache__", ".git", ".venv", "node_modules", ".worktrees")
+    #: Same discipline as `TestLoopbackIsOnlyReachableByFlag.SKIPPED_PREFIXES` above
+    #: (REVIEW-TASK-012 F1, then narrowed by O1 in the same review's re-pass): only
+    #: `.claude/worktrees/` is harness scratch; `.claude/settings.json` and the rest of
+    #: `.claude/` stay scanned.
+    SKIPPED_PREFIXES = ((".claude", "worktrees"),)
+
+    def test_the_flag_appears_in_exactly_this_tasks_code_tests_and_two_named_manifests(
+        self,
+    ) -> None:
+        found = []
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file() or path.suffix not in self.SCANNED_SUFFIXES:
+                continue
+            rel = path.relative_to(REPO_ROOT)
+            if any(part in self.SKIPPED_PARTS for part in rel.parts):
+                continue
+            if any(rel.parts[: len(prefix)] == prefix for prefix in self.SKIPPED_PREFIXES):
+                continue
+            if any(part.startswith("dist") for part in rel.parts):
+                continue
+            if "allow_fleet" in path.read_text("utf-8", errors="ignore"):
+                found.append(rel)
+        found = sorted(found)
+        permitted = {
+            Path("apps/domain/outbound.py"),
+            Path("apps/domain/transport.py"),
+            Path("apps/tests/test_outbound_policy.py"),
+            Path("apps/tests/test_outbound_transport.py"),
+            # DP-035 D3's own named exceptions.
+            Path("apps/addons/collector.trendradar.rest/addon.toml"),
+            Path("apps/addons/collector.tubedepth.rest/addon.toml"),
+            # This task's own idempotent row migration script: it writes the flag into a
+            # registered row's stored profile, which is the mechanism DP-035 D3 names for
+            # the cutover — not an accidental occurrence, so it belongs in the permitted
+            # set rather than being caught as one.
+            Path("apps/scripts/migrate_fleet_source_rows.py"),
+            # REVIEW-TASK-012 F4's repair: this script's own committed tests, whose
+            # fixtures and assertions name the flag directly (`allow_fleet=True` in a
+            # migrated profile, `FLEET_TARGETS`, `fleet_hostname_for`'s own tests).
+            Path("apps/tests/test_migrate_fleet_source_rows.py"),
+        }
+        assert set(found) == permitted, (
+            f"unexpected occurrences: {set(found) - permitted}; "
+            f"missing expected occurrences: {permitted - set(found)}"
+        )
+        # The control: the scan can find things. An empty result on both sides would
+        # satisfy the equality assertion above just as well as a correct one.
+        assert Path("apps/domain/outbound.py") in found
+
+    def test_the_scan_reaches_the_file_types_a_flag_could_be_set_in(self) -> None:
+        """The control. A scan that matched nothing would pass the case above."""
+        reached = set()
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file() or path.suffix not in self.SCANNED_SUFFIXES:
+                continue
+            rel = path.relative_to(REPO_ROOT)
+            if any(part in self.SKIPPED_PARTS for part in rel.parts):
+                continue
+            if any(rel.parts[: len(prefix)] == prefix for prefix in self.SKIPPED_PREFIXES):
+                continue
+            reached.add(path.suffix)
+        for required in (".py", ".toml"):
             assert required in reached, f"the scan opened no {required} file"
 
 
@@ -993,3 +1114,70 @@ class TestPlainHttpForLoopback:
 
         assert not isinstance(response, Refusal)
         assert response.status == 200
+
+
+# --------------------------------------------------------------------------- #
+# DP-035 D1 — the transport-time half of the fleet scope.
+# --------------------------------------------------------------------------- #
+
+
+def _http_request(scope: str, host: str = "example") -> PreparedRequest:
+    """A hand-built plain-HTTP request carrying `scope`, bypassing `resolve` the same way
+    `TestPlainHttpForLoopback.test_a_non_loopback_address_is_refused_by_the_transport_
+    even_if_the_profile_says_yes` already does — so this can supply an address list
+    directly rather than needing a real listener to answer one."""
+    return PreparedRequest(
+        url=f"http://{host}/v1/items",
+        host=host,
+        port=80,
+        endpoint_ref="items",
+        scheme="http",
+        plain_http_scope=scope,
+    )
+
+
+class TestFleetScopePlainHttpReCheck:
+    """DP-035 D1's transport-time half, unit-tested against supplied address lists rather
+    than through a stub. A private fleet address cannot be stood up as a reachable stub on
+    this machine the way a loopback one can (`TestPlainHttpForLoopback` above uses a real
+    `http_stub`), so this calls `_refuse_http_off_loopback` directly — the same function
+    `SocketTransport.send` calls, with no socket involved either way.
+    """
+
+    def test_a_fleet_admissible_address_is_permitted_under_fleet_scope(self) -> None:
+        outcome = _refuse_http_off_loopback(_http_request("fleet"), ["10.0.0.5"])
+        assert outcome is None
+
+    def test_loopback_is_still_permitted_under_fleet_scope(self) -> None:
+        """Fleet scope widens rather than replaces: loopback stays admissible too, since a
+        fleet-scoped profile's own address rule already admits it."""
+        outcome = _refuse_http_off_loopback(_http_request("fleet"), ["127.0.0.1"])
+        assert outcome is None
+
+    @pytest.mark.parametrize(
+        "address", ["169.254.169.254", "224.0.0.1", "240.0.0.1", "0.0.0.0"]
+    )
+    def test_a_blocked_range_is_refused_even_under_fleet_scope(self, address: str) -> None:
+        outcome = _refuse_http_off_loopback(_http_request("fleet"), [address])
+        assert isinstance(outcome, Refusal), address
+        assert outcome.reason is RefusalReason.SCHEME_NOT_ALLOWED
+
+    def test_a_fleet_address_is_refused_under_loopback_scope(self) -> None:
+        """The regression the packet names: a private address is still refused when the
+        request's own `plain_http_scope` is `"loopback"`, whatever the profile that built
+        it claimed — `resolve` is what decides the scope once, and nothing here re-derives
+        a wider one from a profile it never sees."""
+        outcome = _refuse_http_off_loopback(_http_request("loopback"), ["10.0.0.5"])
+        assert isinstance(outcome, Refusal)
+        assert outcome.reason is RefusalReason.SCHEME_NOT_ALLOWED
+
+    def test_loopback_is_still_permitted_under_loopback_scope(self) -> None:
+        """The positive control for the case above: loopback scope is not simply broken by
+        this class's own setup."""
+        outcome = _refuse_http_off_loopback(_http_request("loopback"), ["127.0.0.1"])
+        assert outcome is None
+
+    def test_something_that_is_not_an_address_is_refused_under_fleet_scope_too(self) -> None:
+        outcome = _refuse_http_off_loopback(_http_request("fleet"), ["not-an-ip"])
+        assert isinstance(outcome, Refusal)
+        assert outcome.reason is RefusalReason.ADDRESS_RANGE_BLOCKED

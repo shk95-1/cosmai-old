@@ -43,16 +43,34 @@ location guard below.
 entry rather than an edit. Two of the entries are security guards rather than
 type checks, carried forward unchanged from P0-A:
 
-* ``_loopback_host`` (SEC-002) refuses a non-loopback API bind address instead
-  of merely defaulting to loopback. This is about the operator API's own bind
-  address, not the database TCP host DP-032 adds — the database is expected to
-  be a real, non-loopback-in-general shared server, so ``_loopback_host`` is
-  never applied to ``db_host``.
+* ``_api_host_literal`` and ``_api_bind_is_permitted_for_scope`` (SEC-002) together
+  refuse an API bind address the operator's stated ``COSMA_API_BIND_SCOPE`` does not
+  permit, instead of merely defaulting to loopback — split across a ``Setting`` parser
+  and a ``CrossCheck`` because DP-035 D2 made the decision depend on two settings at
+  once (see "What DP-035 D2 changes" below). This is about the operator API's own bind
+  address, not the database TCP host DP-032 adds — the database is expected to be a
+  real, non-loopback-in-general shared server, so neither function is ever applied to
+  ``db_host``.
 * ``secret_store_location_problem`` (SEC-001) refuses a secret store that
   resolves to somewhere inside the repository working tree. It is the
   application-startup half of the obligation ``docs/conventions/secret-setup.md``
   records; the test-session half lives in ``tests/conftest.py`` and calls this
   same function, so the two cannot drift.
+
+**What DP-035 D2 changes.** SEC-002 relaxes from "loopback only, no exceptions" to
+"loopback, or the unspecified address under an explicit opt-in": ``COSMA_API_BIND_SCOPE``
+(``loopback`` default, or ``container``) gates whether ``COSMA_API_HOST`` may be the
+wildcard address ``0.0.0.0``/``::``. This is a deliberate, recorded widening of the
+threat model, not a loosening of it — the exposure boundary it moves is the process
+bind, not the host-side surface: `cosmai-api` still publishes only `127.0.0.1:8100` on
+the host under either scope (the stack compose file's own port mapping, unaffected by
+this setting), and what actually changes under ``container`` scope is that the process
+becomes reachable, unauthenticated, by every other container on the deploying fleet's
+own ``db-net`` bridge network. DP-035's own Decision Packet records why that is accepted
+(every ``db-net`` member is this operator's own fleet) and what would have to be true
+before it stopped being safe (an untrusted workload joining ``db-net``, or the API being
+published beyond host loopback) — this module enforces the mechanical half of that
+decision; it does not re-argue it.
 
 **Reconciliation (M1 Tasks 5-6).** Until now this module carried a minimal,
 self-contained stand-in for P0's ``platform_core.errors``/``platform_core.obs``
@@ -197,6 +215,10 @@ class PlatformConfig:
     poll_ms: int
     api_host: str
     api_port: int
+    #: DP-035 D2. ``"loopback"`` (default) or ``"container"``; gates whether ``api_host``
+    #: may be the unspecified address. Never applied to ``db_host`` — the same reason
+    #: ``_loopback_host`` is not, stated in the module docstring's SEC-002 bullet.
+    api_bind_scope: str
     log_level: str
     #: Where both entrypoints write their structured log, or ``None`` for standard
     #: error. ``None`` is the ordinary case; a path is what makes the events of
@@ -257,26 +279,46 @@ def _log_file(value: str) -> Path | None:
     return path
 
 
-def _loopback_host(value: str) -> str:
-    """Accept a loopback IP address and refuse anything else (SEC-002).
+def _api_host_literal(value: str) -> str:
+    """Accept a literal IP address and refuse anything else (SEC-002, DP-035 D2).
 
     This guards the operator **API's** bind address only. DP-032 moves the
     *database* host to a real TCP address on a shared server (``_text`` below),
     which is deliberately not loopback-only; the two are different settings with
     different threat models and this parser is not reused for the database one.
+
+    **Loopback-or-not is deliberately not decided here.** Until DP-035 D2 this
+    function (then named ``_loopback_host``) refused any non-loopback value
+    outright; whether a non-loopback value is ever acceptable now depends on a
+    second setting, ``COSMA_API_BIND_SCOPE``, which a single-value ``Setting.parse``
+    cannot see — so that half moved to ``_api_bind_is_permitted_for_scope`` below,
+    a ``CrossCheck`` with access to both. What this parser alone still refuses,
+    unconditionally, in every scope: a value that is not a literal IP address at
+    all. SEC-002 has never accepted a host name for this setting, and that part
+    of the rule needs no second setting to decide.
     """
     try:
-        address = ipaddress.ip_address(value)
+        ipaddress.ip_address(value)
     except ValueError:
         raise _Rejected(
-            "must be a literal loopback IP address such as "
+            "must be a literal IP address such as "
             f"{DEFAULT_API_HOST} or ::1, and a host name is not accepted"
         ) from None
-    if not address.is_loopback:
-        raise _Rejected(
-            "must be a loopback address; P1 refuses any other bind, "
-            "including the wildcard address, and does not fall back to loopback"
-        )
+    return value
+
+
+_BIND_SCOPES: Final[frozenset[str]] = frozenset({"loopback", "container"})
+
+
+def _bind_scope(value: str) -> str:
+    """Accept ``loopback`` or ``container`` and refuse anything else (DP-035 D2).
+
+    Refusing an unrecognised third value here — rather than falling back to
+    whichever of the two is more permissive — is the same "no fallback for a
+    rejected value" rule this module's docstring states for every other setting.
+    """
+    if value not in _BIND_SCOPES:
+        raise _Rejected(f"must be one of {', '.join(sorted(_BIND_SCOPES))}")
     return value
 
 
@@ -313,15 +355,21 @@ SETTINGS: Final[Sequence[Setting]] = (
     Setting("COSMA_RETRY_MAX_MS", "retry_max_ms", _positive_int, default="30000"),
     # How long a worker waits before asking an empty queue again.
     Setting("COSMA_POLL_MS", "poll_ms", _positive_int, default="200"),
-    # Loopback, and only loopback (SEC-002). The default applies when the variable
-    # is absent; a stated non-loopback address is refused rather than replaced.
-    Setting("COSMA_API_HOST", "api_host", _loopback_host, default=DEFAULT_API_HOST),
+    # Loopback, or — only under COSMA_API_BIND_SCOPE=container — the unspecified
+    # address (SEC-002, DP-035 D2). The default applies when the variable is absent;
+    # a stated, disallowed address is refused rather than replaced. Which addresses
+    # are disallowed depends on api_bind_scope, decided by _api_bind_is_permitted_for_scope
+    # below rather than by this parser alone — see _api_host_literal's own docstring.
+    Setting("COSMA_API_HOST", "api_host", _api_host_literal, default=DEFAULT_API_HOST),
     # M-X2 (docs/agent-workflow/reviews/REVIEW-M2-M7.md): `8000` collides with
     # trend-radar's own live dashboard (DP-031 D3, `http://127.0.0.1:8000/api/v1`) — the
     # M7 demo ran the real platform API on `8100` with no stated reason and this default
     # never matched it. `8100` is the number recorded, now made the default rather than
     # left for every deployment to override to avoid a collision on the same host.
     Setting("COSMA_API_PORT", "api_port", _port, default="8100"),
+    # DP-035 D2. `loopback` unless an operator explicitly opts into `container` —
+    # see the module docstring's "What DP-035 D2 changes" paragraph.
+    Setting("COSMA_API_BIND_SCOPE", "api_bind_scope", _bind_scope, default="loopback"),
     Setting("COSMA_LOG_LEVEL", "log_level", _level, default=DEFAULT_LEVEL),
     # Absent means standard error. The default is the empty string rather than
     # ``None`` because ``None`` is how this table spells "required"; a *stated*
@@ -348,6 +396,40 @@ def _backoff_window_is_ordered(
     if maximum < base:
         return ("COSMA_RETRY_MAX_MS", f"must be at least COSMA_RETRY_BASE_MS ({base})")
     return None
+
+
+def _api_bind_is_permitted_for_scope(
+    values: Mapping[str, Any], environment: Mapping[str, str]
+) -> Problem | None:
+    """SEC-002/DP-035 D2: decide the loopback-or-not half `_api_host_literal` could not.
+
+    Loopback is permitted under every scope, unchanged from before DP-035. The
+    unspecified address (``0.0.0.0``/``::``) is permitted only under ``container``
+    scope. Every other address is refused under either scope — in particular, a
+    routable non-loopback literal such as ``10.0.0.5`` is refused under ``container``
+    scope exactly as it always was under the default: ``container`` widens what the
+    *wildcard* address is for, not what any address is for.
+
+    Runs only once both settings parsed cleanly; a value that already failed its own
+    parser already has a problem recorded under its own setting name, and re-checking
+    it here would only report the same misconfiguration twice under two names.
+    """
+    stated = values.get("api_host")
+    scope = values.get("api_bind_scope")
+    if stated is None or scope is None:
+        return None
+    address = ipaddress.ip_address(stated)
+    if address.is_loopback:
+        return None
+    if scope == "container" and address.is_unspecified:
+        return None
+    return (
+        "COSMA_API_HOST",
+        "must be a loopback address; the wildcard/unspecified address is accepted "
+        "only when COSMA_API_BIND_SCOPE=container (DP-035 D2), and every other "
+        "non-loopback value is refused in every scope — P1 does not fall back to "
+        f"loopback, but COSMA_API_HOST was {stated!r} under scope {scope!r}",
+    )
 
 
 def secret_store_location_problem(
@@ -386,6 +468,7 @@ def secret_store_location_problem(
 
 CROSS_CHECKS: Final[Sequence[CrossCheck]] = (
     _backoff_window_is_ordered,
+    _api_bind_is_permitted_for_scope,
     secret_store_location_problem,
 )
 
