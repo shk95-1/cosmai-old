@@ -1,8 +1,10 @@
 # collector.tubedepth.rest — an adapter for the tubedepth (yt-scrapper) YouTube
-# domain service, target fixed by DP-031 D3 (and its 2026-08-21 addendum, which
-# moves the baseline to release tag v1.0.0). See README.md for the collection
-# design and docs/decisions/DP-031-p1-collector-topology.md for why this source
-# is an external adapter rather than an internal direct collector.
+# domain service, target originally fixed by DP-031 D3 (and its 2026-08-21
+# addendum, which moves the baseline to release tag v1.0.0); its address is
+# revised from the loopback literal to the fleet hostname by DP-035 D3 once
+# cosmai joins the fleet's db-net bridge network. See README.md for the
+# collection design and docs/decisions/DP-031-p1-collector-topology.md for why
+# this source is an external adapter rather than an internal direct collector.
 
 [addon]
 id = "collector.tubedepth.rest"
@@ -30,10 +32,15 @@ label = "Page size"
 help = "Rows requested per /v1/artifacts page, 1-500; omit to use this add-on's own default (50)"
 
 [declares]
-# tubedepth's live target is fixed by DP-031 D3 at 127.0.0.1:8080 (loopback) —
-# the operator-approved outbound profile is what actually binds a host, port,
-# and path; this line only states what the add-on needs approved.
-hosts = ["127.0.0.1"]
+# tubedepth's live target is fixed by DP-035 D3 at tubedepth-api:8080 (fleet,
+# reachable over the stack's db-net bridge network) — the operator-approved
+# outbound profile is what actually binds a host, port, and path; this line
+# only states what the add-on needs approved. The operator-approved source row
+# must additionally carry allow_fleet = true and scheme = "http" (this target
+# serves plain HTTP, per-key authenticated); neither is declared here —
+# DP-035 D4: the parser ignores an unknown [declares] key silently, so the
+# grant lives in the row, not in this manifest.
+hosts = ["tubedepth-api"]
 endpoints = ["artifacts_list", "artifact_payload"]
 streams = ["artifacts"]
 needs_credential = true

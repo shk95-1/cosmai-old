@@ -212,3 +212,12 @@ the tubedepth adapter's baseline is **`v1.0.0`** from this date. The owner appro
 this at M4 planning time (2026-08-21, in session). The artifacts-feed surface the adapter
 depends on (`/v1/artifacts?since` → cursor → `/v1/artifacts/{digest}`, `X-API-Key`) is
 unchanged between `5bce7f6` and `v1.0.0`; M4's adapter verifies against the live instance.
+
+## 2026-08-21 addendum — D3's fixed targets revised by DP-035 D3
+
+`[결정]` [DP-035](DP-035-fleet-egress-and-container-bind.md) D3 (owner decision, GitHub
+issue #12) revises the two literal targets D3 fixed: `http://127.0.0.1:8000/api/v1` →
+`http://trend-radar-dashboard:8000/api/v1` and `http://127.0.0.1:8080` →
+`http://tubedepth-api:8080` — compose service hostnames on the stack's `db-net` bridge
+network, replacing the host-loopback addresses that forced `network_mode: host` in M8.
+Everything else in D3 (versions, auth, collection design, the read-only contract) stands.

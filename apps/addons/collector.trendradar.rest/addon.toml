@@ -1,9 +1,13 @@
 # collector.trendradar.rest — adapter for trend-radar 1.0.0's read-only JSON API.
 #
-# Target fixed by DP-031 D3: http://127.0.0.1:8000/api/v1, unauthenticated. Endpoint
-# shapes and rules from `docs/api.md` and `src/trend_radar/dashboard/{api,queries}.py`
-# in the sibling `service/trend-radar` repository (read-only to this project), plus
-# this add-on's own live capture — see handler.py's module docstring and
+# Target originally fixed by DP-031 D3 at http://127.0.0.1:8000/api/v1,
+# unauthenticated; DP-035 D3 revises the address to
+# http://trend-radar-dashboard:8000/api/v1 once cosmai joins the fleet's db-net
+# bridge network, where the loopback literal is unreachable. DP-031 D3's
+# versions, auth, and collection design otherwise stand. Endpoint shapes and
+# rules from `docs/api.md` and `src/trend_radar/dashboard/{api,queries}.py` in
+# the sibling `service/trend-radar` repository (read-only to this project),
+# plus this add-on's own live capture — see handler.py's module docstring and
 # apps/tests/fixtures/public/collector.trendradar.rest/MANIFEST.md for what was
 # measured rather than assumed, in particular the `captured_at` filter that 500s.
 
@@ -53,7 +57,15 @@ label = "Runs checked for new buckets"
 help = "How many rows of GET /api/v1/runs?limit=N to read when deciding whether a table+source has anything new to collect. Default 50, capped at the API's own 200."
 
 [declares]
-hosts = ["127.0.0.1"]
+# trend-radar's live target is fixed by DP-035 D3 at trend-radar-dashboard:8000
+# (fleet, reachable over the stack's db-net bridge network) — the
+# operator-approved outbound profile is what actually binds a host, port, and
+# path; this line only states what the add-on needs approved. The
+# operator-approved source row must additionally carry allow_fleet = true and
+# scheme = "http" (trend-radar's API is plain HTTP, unauthenticated); neither
+# is declared here — DP-035 D4: the parser ignores an unknown [declares] key
+# silently, so the grant lives in the row, not in this manifest.
+hosts = ["trend-radar-dashboard"]
 endpoints = [
     "runs",
     "sources",

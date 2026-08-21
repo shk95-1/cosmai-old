@@ -1,7 +1,10 @@
 """Collector for trend-radar 1.0.0's read-only dashboard JSON API.
 
-Target fixed by DP-031 D3: ``http://127.0.0.1:8000/api/v1``, unauthenticated
-(``needs_credential = false``). Endpoint shapes and rules are from
+Target originally fixed by DP-031 D3 at ``http://127.0.0.1:8000/api/v1``; DP-035 D3
+revises the address to ``http://trend-radar-dashboard:8000/api/v1`` once cosmai joins
+the fleet's ``db-net`` bridge network, where the loopback literal is unreachable.
+Unauthenticated either way (``needs_credential = false``). Endpoint shapes and rules
+are from
 ``service/trend-radar``'s own ``docs/api.md`` and
 ``src/trend_radar/dashboard/{api,queries}.py`` (read-only to this project — DP-031's
 "heavy periodic collector, external implementation" is exactly this source), plus this

@@ -6,6 +6,8 @@
 
 P1 scope amendment: dashboard write-only credential entry and the security disposition are decided in [DP-034](../decisions/DP-034-p1-credential-entry.md).
 
+P1 scope amendment (2026-08-21): fleet egress and the container bind are decided in [DP-035](../decisions/DP-035-fleet-egress-and-container-bind.md) — the two clauses it amends are annotated in place below.
+
 ## 목적과 경계
 
 P0가 폐기형 prototype이라는 사실은 실제 credential, 외부 네트워크, dataset과 debug data를 안전하지 않게 다룰 이유가 되지 않는다. 이 문서는 production IAM 또는 secret-management 제품을 선택하지 않고도 지켜야 하는 최소 불변조건을 정의한다.
@@ -13,6 +15,12 @@ P0가 폐기형 prototype이라는 사실은 실제 credential, 외부 네트워
 ## Local execution boundary
 
 - API와 Dashboard는 기본적으로 loopback interface에만 bind한다.
+  - `[결정]` [DP-035](../decisions/DP-035-fleet-egress-and-container-bind.md) D2 (2026-08-21):
+    API의 process bind는 `COSMA_API_BIND_SCOPE=container`라는 명시적 opt-in 아래에서만
+    unspecified address를 허용한다. 기본값은 여전히 loopback 전용이고 폴백은 없다. 이때
+    노출 경계는 process bind에서 compose 포트 매핑으로 이동하며, 호스트 쪽 표면은
+    loopback 전용으로 유지된다(`127.0.0.1` 포트 매핑). 컨테이너 네트워크(`db-net`) 안의
+    다른 fleet 컨테이너가 API에 도달 가능해지는 것은 DP-035 D2가 기록한 의도된 변화다.
 - 별도 Decision Packet 없이 public ingress, shared staging 또는 internet-facing deployment를 만들지 않는다.
 - 인증이 없는 P0 UI는 local operator boundary 밖에서 사용할 수 있다고 가정하지 않는다.
 - local boundary를 넘어야 하는 실험은 먼저 threat, identity, authorization과 data exposure를 별도 질문으로 기록한다.
@@ -25,6 +33,11 @@ This section applies only to P0-B. P0-A must not register a source, create an ou
 - Source profile에는 허용 HTTPS scheme, hostname, port와 endpoint path 범위를 기록한다.
 - HTTP redirect가 발생하면 destination을 같은 정책으로 다시 검증한다.
 - DNS resolution 결과가 loopback, private, link-local, multicast 또는 허용되지 않은 address range이면 차단한다.
+  - `[결정]` 이 규칙의 per-source 구멍은 정확히 두 개다: `allow_loopback`(loopback만),
+    그리고 [DP-035](../decisions/DP-035-fleet-egress-and-container-bind.md) D1의
+    `allow_fleet`(private만, fleet 컨테이너 대상). 두 플래그는 직교하고, 둘 다 켜져도
+    link-local(169.254.169.254 포함)·multicast·reserved·unspecified는 계속 차단된다.
+    두 플래그 모두 운영자가 source row에 승인해야 하며 커밋된 기본값이 될 수 없다.
 - connect/read timeout, maximum redirects, response body size와 page/record limit을 source별로 둔다.
 - Network error와 HTTP response를 기록할 때 Authorization, Cookie와 provider-protected header를 제거한다.
 

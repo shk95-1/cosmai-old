@@ -256,6 +256,16 @@ Claim-level evidence labels such as `[확인 사실]` and `[가설]` are differe
   waiver at this gate rather than extending it (D3). Narrows
   [OQ-007](open-questions/OQ-007-credential-scope.md)'s dashboard/API write side;
   worker-side credential-resolution scope stays open.
+- `[결정]` [DP-035](decisions/DP-035-fleet-egress-and-container-bind.md) joins cosmai's
+  containers to the stack's `db-net` bridge network as one bundle (owner decision
+  2026-08-21, GitHub issue #12, highest priority): a second per-source address-rule hole
+  `allow_fleet` with the same two-layer discipline as `allow_loopback` (D1); SEC-002's
+  bind guard relaxed to an explicit `COSMA_API_BIND_SCOPE=container` opt-in, the exposure
+  boundary moving to the compose port mapping while the host surface stays loopback (D2);
+  DP-031 D3's fixed adapter targets revised from loopback literals to fleet hostnames
+  (`trend-radar-dashboard:8000`, `tubedepth-api:8080`) (D3). Link-local, multicast,
+  reserved, and unspecified stay blocked under every flag; the SSRF posture (add-on names
+  an endpoint, the source row's grant decides the destination) is unchanged (D4).
 
 ### Technology constraints
 

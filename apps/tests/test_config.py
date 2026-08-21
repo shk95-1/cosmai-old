@@ -289,6 +289,75 @@ def test_database_tcp_host_is_never_forced_to_loopback(baseline: dict[str, str])
     assert config.db_host == "10.0.0.5"
 
 
+# --- DP-035 D2: COSMA_API_BIND_SCOPE and the container-bind opt-in -----------
+
+
+def test_the_default_scope_is_loopback(baseline: dict[str, str]) -> None:
+    assert "COSMA_API_BIND_SCOPE" not in baseline
+    config = load_config(baseline)
+    assert config.api_bind_scope == "loopback"
+
+
+def test_the_default_scope_still_refuses_the_wildcard_address(baseline: dict[str, str]) -> None:
+    """The positive control the packet names by name: the container opt-in must not have
+    widened what the *default* scope accepts. Without `COSMA_API_BIND_SCOPE` stated at
+    all, `0.0.0.0` is refused exactly as it was before this setting existed —
+    `test_a_non_loopback_api_host_is_refused` above already covers this value as one of
+    several; this asserts it on its own, under the name DP-035's acceptance criteria use."""
+    assert "COSMA_API_BIND_SCOPE" not in baseline
+    error = rejection({**baseline, "COSMA_API_HOST": "0.0.0.0"})
+    assert "COSMA_API_HOST" in error.summary
+
+
+@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+def test_container_scope_accepts_the_wildcard_address(
+    baseline: dict[str, str], wildcard: str
+) -> None:
+    config = load_config(
+        {**baseline, "COSMA_API_BIND_SCOPE": "container", "COSMA_API_HOST": wildcard}
+    )
+    assert config.api_bind_scope == "container"
+    assert config.api_host == wildcard
+
+
+def test_container_scope_still_refuses_a_routable_non_loopback_literal(
+    baseline: dict[str, str],
+) -> None:
+    """`container` widens what the *wildcard* address is for, not what any address is
+    for: a real fleet-network literal like `10.0.0.5` is not the unspecified address and
+    stays refused."""
+    error = rejection(
+        {**baseline, "COSMA_API_BIND_SCOPE": "container", "COSMA_API_HOST": "10.0.0.5"}
+    )
+    assert "COSMA_API_HOST" in error.summary
+
+
+def test_container_scope_still_accepts_loopback(baseline: dict[str, str]) -> None:
+    """The control: `container` scope is a widening, not a replacement of the loopback
+    case every other test in this module already exercises."""
+    config = load_config(
+        {**baseline, "COSMA_API_BIND_SCOPE": "container", "COSMA_API_HOST": DEFAULT_API_HOST}
+    )
+    assert config.api_host == DEFAULT_API_HOST
+
+
+@pytest.mark.parametrize("given", ["Container", "LOOPBACK", "public", "", "0"])
+def test_an_invalid_bind_scope_value_is_refused(baseline: dict[str, str], given: str) -> None:
+    error = rejection({**baseline, "COSMA_API_BIND_SCOPE": given})
+    assert "COSMA_API_BIND_SCOPE" in error.summary
+
+
+def test_an_invalid_bind_scope_is_refused_even_with_an_otherwise_valid_host(
+    baseline: dict[str, str],
+) -> None:
+    """A malformed scope is refused on its own account rather than silently treated as
+    whichever scope happens to be more permissive for the host value given alongside it."""
+    error = rejection(
+        {**baseline, "COSMA_API_BIND_SCOPE": "public", "COSMA_API_HOST": DEFAULT_API_HOST}
+    )
+    assert "COSMA_API_BIND_SCOPE" in error.summary
+
+
 # --- SEC-001: the secret-store tree guard, unchanged in behaviour ------------
 
 
