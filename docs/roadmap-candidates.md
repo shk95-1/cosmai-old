@@ -33,6 +33,8 @@ Open Question이 막고 있는지를 다룬다. `[결정]` 이 문서는 그 역
 | `RC-006` | tubedepth 잡 생성 트리거 (수집이 읽기 전용을 넘어 수집 요청까지) | [DP-012](decisions/DP-012-independent-scraper-services.md), [DP-031](decisions/DP-031-p1-collector-topology.md) D4 | DP-012의 읽기 경계를 넓히는 후보 — 지금은 COSMAI가 tubedepth의 기존 export를 읽기만 한다. |
 | `RC-007` | 대시보드 인증 | [`p0-security.md`](conventions/p0-security.md) Local execution boundary | loopback 밖 노출을 만들기 전 반드시 있어야 하는 전제조건. |
 
+`[확인 사실]` **2026-08-21, 오너 지시로 7건 전부 GitHub issue로 등록됨**: `RC-001`→[#5](https://github.com/slopindustries/cosmai/issues/5), `RC-002`→[#6](https://github.com/slopindustries/cosmai/issues/6), `RC-003`→[#7](https://github.com/slopindustries/cosmai/issues/7), `RC-004`→[#8](https://github.com/slopindustries/cosmai/issues/8), `RC-005`→[#9](https://github.com/slopindustries/cosmai/issues/9), `RC-006`→[#10](https://github.com/slopindustries/cosmai/issues/10), `RC-007`→[#11](https://github.com/slopindustries/cosmai/issues/11). 이 표가 여전히 정본이고, issue는 추적 표면이다.
+
 ## 항목별 상세
 
 ### `RC-001` — 카드·트렌드 화면
