@@ -77,6 +77,48 @@ A P1 artifact is about to be published from a store containing an encumbered sou
 the platform can say — from what it stores, not from a person's memory — that the artifact
 carries an obligation and which one.
 
+## 2026-08-21 addendum — M8 deploy makes the exit condition's premise real
+
+`[확인 사실]` M8 (`docs/p1/M8-DEPLOY-RECORD.md`) put a second PostgREST instance,
+`postgrest-cosmai`, in front of the live `cosmai` database on the shared
+PostgreSQL server — `PGRST_DB_SCHEMAS=cosmai`, anonymous SELECT on every table
+in schema `cosmai` via `postgrest_cosmai_anon`, published on the local network
+(`stack/README.md`'s cosmai section, `stack/init/50-cosmai-bootstrap.sh`). The
+owner accepted this exposure and its ODbL consequence explicitly as part of the
+M8 brief, in the same session this note was recorded.
+
+`[확인 사실]` The live `cosmai` database's `source` table includes
+`obf.product.normalize` (an Open Beauty Facts normalizer) alongside sources this
+question does not concern; `normalized_result` and any downstream export table
+in schema `cosmai` is now reachable by an anonymous `SELECT` through
+`postgrest-cosmai`, unconditionally — the grant is schema-wide
+(`GRANT SELECT ON ALL TABLES IN SCHEMA cosmai TO postgrest_cosmai_anon`, plus a
+matching default-privilege grant for tables created later), not filtered by
+source.
+
+`[추론]` This is exactly this question's own Exit condition: "A P1 artifact is
+about to be published from a store containing an encumbered source." It is no
+longer "about to be" — normalized OBF-derived rows, if any exist in the current
+data, are already reachable by anonymous SELECT the moment `postgrest-cosmai`
+is up. `[가설]` Whether any row currently in `normalized_result` actually
+derives from `obf.product.normalize` is not established by this addendum — a
+row count or lineage check would be needed to say so, and this note does not
+claim it. What this addendum does establish is that the *question* stops being
+hypothetical: OQ-015 was `OPEN` and low-priority ("nothing in P0 publishes, so
+nothing in P0 triggers it") precisely because no publication surface existed.
+One now does, by owner decision, and DP-027's deferred share-alike obligation
+attaches to whatever encumbered-source rows the schema-wide grant actually
+reaches.
+
+This addendum does not resolve OQ-015 — no taxonomy decision, flag, or refusal
+mechanism is added here, and status stays `OPEN`. It records that the question
+is live rather than deferred, and that a Decision Packet answering it (fourth
+class, orthogonal flag, or a mechanical refusal per H3) is no longer optional
+background work — `postgrest-cosmai` publishes ahead of that decision, which is
+the exact gap H3's falsification condition and the "Nothing in the platform; a
+recorded obligation per source" alternative both already named as unsafe once
+something actually publishes.
+
 ## Resolution
 
 Not completed while status is `OPEN`. Resolution requires a Decision Packet.

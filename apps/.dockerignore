@@ -1,0 +1,19 @@
+# Build context is this directory (apps/), shared by Dockerfile and
+# Dockerfile.dashboard. Excludes what neither image needs to COPY.
+
+.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+
+# The dashboard has its own build (Dockerfile.dashboard); Dockerfile (the
+# python image) never needs its source tree, and neither image needs its
+# node_modules or a stale local dist/ built outside the container.
+dashboard/node_modules/
+dashboard/dist/
+
+.claude/
+.git/
